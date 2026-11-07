@@ -578,6 +578,7 @@ class RadarPlotterApp(tk.Tk):
         self._month_cluster_y = np.array([])
         self._month_dates = np.array([])
         self._month_zdr_values = np.array([])
+        self._month_zdr_samples = []
         self._height_folder = None
         self._height_folder_var = tk.StringVar(value="Nincs hónap mappa kiválasztva")
         self._height_status_var = tk.StringVar(value="Válasszon ki egy hónap mappát a magasságpontfelhőhöz.")
@@ -2168,7 +2169,11 @@ class RadarPlotterApp(tk.Tk):
 
     def _on_month_daily_avg_toggle(self):
         if hasattr(self, "_month_folder") and self._month_folder:
-            self._plot_month_folder_tab(getattr(self, "_month_dates", []), getattr(self, "_month_zdr_values", np.array([])))
+            self._plot_month_folder_tab(
+                getattr(self, "_month_dates", []),
+                getattr(self, "_month_zdr_values", np.array([])),
+                getattr(self, "_month_zdr_samples", []),
+            )
             self._attach_cursors()
 
     def _on_month_break_toggle(self):
@@ -2178,7 +2183,11 @@ class RadarPlotterApp(tk.Tk):
             self._month_break_drag_index = None
             self._month_break_dragging = False
         if hasattr(self, "_month_folder") and self._month_folder:
-            self._plot_month_folder_tab(getattr(self, "_month_dates", []), getattr(self, "_month_zdr_values", np.array([])))
+            self._plot_month_folder_tab(
+                getattr(self, "_month_dates", []),
+                getattr(self, "_month_zdr_values", np.array([])),
+                getattr(self, "_month_zdr_samples", []),
+            )
             self._attach_cursors()
 
     def _disconnect_month_break_events(self):
@@ -2243,7 +2252,8 @@ class RadarPlotterApp(tk.Tk):
         points = sorted(np.unique(np.round(points, 10)))
         self._month_break_points = [float(v) for v in points]
         self._month_break_x = new_x
-        self._plot_month_folder_tab(self._month_dates, self._month_zdr_values)
+        self._plot_month_folder_tab(
+            self._month_dates, self._month_zdr_values, self._month_zdr_samples)
 
     def _on_month_break_release(self, _event):
         if not self._month_break_enabled.get():
@@ -2280,7 +2290,7 @@ class RadarPlotterApp(tk.Tk):
         self._month_status_var.set("Hónap mappa betöltése...")
 
         try:
-            dates, zdr_values = self._collect_month_zdr(folder)
+            dates, zdr_values, zdr_samples = self._collect_month_zdr(folder)
         except Exception as exc:
             messagebox.showerror("Hiba", f"Nem sikerült beolvasni a hónap mappát:\n{exc}")
             self._month_status_var.set("Hiba történt a hónap mappa beolvasásakor.")
@@ -2292,7 +2302,7 @@ class RadarPlotterApp(tk.Tk):
             self.canvas5.draw()
             return
 
-        self._plot_month_folder_tab(dates, zdr_values)
+        self._plot_month_folder_tab(dates, zdr_values, zdr_samples)
         self._month_status_var.set(f"{len(dates)} pont betöltve.")
 
         self._height_folder = folder
@@ -2813,6 +2823,7 @@ class RadarPlotterApp(tk.Tk):
     def _collect_month_zdr(self, root_folder):
         dates = []
         values = []
+        samples = []
         for day_name in sorted(os.listdir(root_folder)):
             day_path = os.path.join(root_folder, day_name)
             if not os.path.isdir(day_path):
@@ -2826,15 +2837,27 @@ class RadarPlotterApp(tk.Tk):
                 dt = self._parse_datetime_from_filename(fname)
                 if dt is None:
                     continue
-                heights, zdr_vals, _ = parse_file(file_path)
+                _, zdr_vals, _ = parse_file(file_path)
                 if zdr_vals.size == 0:
                     continue
-                mean_zdr = np.nanmean(zdr_vals)
-                if np.isnan(mean_zdr):
+                valid_zdr = zdr_vals[np.isfinite(zdr_vals)]
+                if valid_zdr.size == 0:
                     continue
+                mean_zdr = np.mean(valid_zdr)
                 dates.append(dt)
                 values.append(mean_zdr)
-        return dates, np.array(values, dtype=float)
+                samples.append(valid_zdr)
+        return dates, np.array(values, dtype=float), samples
+
+    @staticmethod
+    def _calculate_month_zdr_stats(values):
+        values = np.asarray(values, dtype=float)
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            return 0, np.nan, np.nan
+        mean = float(np.mean(values))
+        std = float(np.std(values, ddof=1)) if values.size > 1 else np.nan
+        return int(values.size), mean, std
 
     def _densest_cluster_mask(self, x_vals, y_vals):
         if x_vals.size < 3:
@@ -2871,22 +2894,17 @@ class RadarPlotterApp(tk.Tk):
             return np.array([], dtype=float)
         return breaks
 
-    def _plot_month_folder_tab(self, dates, zdr_values):
+    def _plot_month_folder_tab(self, dates, zdr_values, zdr_samples):
         self._disconnect_month_break_events()
         self.fig5.clear()
         ax = self.fig5.add_subplot(111)
 
-        def _mean(values):
-            vals = np.asarray(values, dtype=float)
-            vals = vals[~np.isnan(vals)]
-            if vals.size == 0:
-                return np.nan
-            return float(np.mean(vals))
-
         x_dates = np.array(dates)
         y_values = np.array(zdr_values, dtype=float)
+        sample_groups = [np.asarray(values, dtype=float) for values in zdr_samples]
         self._month_dates = x_dates
         self._month_zdr_values = y_values
+        self._month_zdr_samples = sample_groups
 
         ax.scatter(x_dates, y_values, color="#0078d4", s=40, alpha=0.8,
                    edgecolors="#333", linewidths=0.4, label="ZDR pontok")
@@ -2989,19 +3007,38 @@ class RadarPlotterApp(tk.Tk):
         ax.set_title("Havi ZDR pontfelhő", fontsize=13, fontweight="bold")
 
         x_nums_all = mdates.date2num(x_dates) if x_dates.size else np.array([])
-        mean_label = "Mean: n/a"
-        if self._month_break_enabled.get() and self._month_break_x is not None and x_nums_all.size:
-            left_vals = y_values[x_nums_all <= self._month_break_x]
-            right_vals = y_values[x_nums_all > self._month_break_x]
-            mean_left = _mean(left_vals)
-            mean_right = _mean(right_vals)
-            left_txt = "n/a" if np.isnan(mean_left) else f"{mean_left:.4f}"
-            right_txt = "n/a" if np.isnan(mean_right) else f"{mean_right:.4f}"
-            mean_label = f"Mean törés előtt: {left_txt}    |    Mean törés után: {right_txt}"
+        mean_label = ""
+        if self._month_break_enabled.get() and self._month_break_points and x_nums_all.size:
+            break_count_labels = []
+            breaks = sorted(float(value) for value in self._month_break_points)
+            for idx, breakpoint in enumerate(breaks):
+                before_samples = np.concatenate([
+                    sample_groups[i] for i in range(len(sample_groups))
+                    if np.isfinite(x_nums_all[i]) and x_nums_all[i] <= breakpoint
+                ]) if sample_groups else np.array([], dtype=float)
+                after_samples = np.concatenate([
+                    sample_groups[i] for i in range(len(sample_groups))
+                    if np.isfinite(x_nums_all[i]) and x_nums_all[i] > breakpoint
+                ]) if sample_groups else np.array([], dtype=float)
+                before_count, before_mean, before_std = self._calculate_month_zdr_stats(
+                    before_samples)
+                after_count, after_mean, after_std = self._calculate_month_zdr_stats(
+                    after_samples)
+                prefix = f"{idx + 1}. " if len(breaks) > 1 else ""
+                before_mean_text = f"{before_mean:.4f}" if np.isfinite(before_mean) else "n/a"
+                before_std_text = f"{before_std:.4f}" if np.isfinite(before_std) else "n/a"
+                after_mean_text = f"{after_mean:.4f}" if np.isfinite(after_mean) else "n/a"
+                after_std_text = f"{after_std:.4f}" if np.isfinite(after_std) else "n/a"
+                break_count_labels.append(
+                    f"{prefix}előtte: N = {before_count}, nyers átlag = {before_mean_text}, "
+                    f"s = {before_std_text} dB  |  utána: N = {after_count}, "
+                    f"nyers átlag = {after_mean_text}, s = {after_std_text} dB")
+            mean_label = "\n".join(break_count_labels)
         else:
-            mean_total = _mean(y_values)
-            if not np.isnan(mean_total):
-                mean_label = f"Mean (teljes intervallum): {mean_total:.4f}"
+            _, mean_total, _ = self._calculate_month_zdr_stats(
+                np.concatenate(sample_groups) if sample_groups else np.array([]))
+            if np.isfinite(mean_total):
+                mean_label = f"Nyers ZDR átlag (teljes intervallum): {mean_total:.4f}"
 
         ax.text(0.01, 0.98, mean_label,
             transform=ax.transAxes,
@@ -3044,7 +3081,11 @@ class RadarPlotterApp(tk.Tk):
 
     def _on_month_ci_toggle(self):
         if hasattr(self, "_month_folder") and self._month_folder:
-            self._plot_month_folder_tab(getattr(self, "_month_dates", []), getattr(self, "_month_zdr_values", np.array([])))
+            self._plot_month_folder_tab(
+                getattr(self, "_month_dates", []),
+                getattr(self, "_month_zdr_values", np.array([])),
+                getattr(self, "_month_zdr_samples", []),
+            )
             self._attach_cursors()
 
     def _t_critical_value(self, df):

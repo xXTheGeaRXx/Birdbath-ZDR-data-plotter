@@ -99,7 +99,12 @@ tartalmaz `.txt` fájlokat, vagy radarnevű almappákat, bennük `.txt` fájlokk
 A dátumhoz kötött funkciókhoz a fájlnév elején az állomáskódot és az időpontot
 használd ebben a formában:
 
-`ÁLLOMÁSKÓDÉÉÉÉHHNNÓÓPP.txt`.
+```text
+BUD202509121430.txt
+```
+
+Vagyis: `ÁLLOMÁSKÓDÉÉÉÉHHNNÓÓPP.txt`. Felismert állomáskódok: `BUD`, `HAR`,
+`NAP`, `POG`, `SZE`.
 
 A hónap szerinti pontfelhő egy kiválasztott hónapmappán belül napokra bontott
 almappákat keres, azokban dátumot tartalmazó nevű `.txt` fájlokkal. Az
